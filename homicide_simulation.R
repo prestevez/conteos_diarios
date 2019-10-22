@@ -3,6 +3,13 @@ library(magrittr)
 library(zoo)
 library(scales)
 library(lubridate)
+#install.packages("gganimate")
+library(gganimate)
+#install.packages("rust")
+#install.packages("sf")
+library(sf)
+#install.packages("gifski")
+#install.packages("transformr")
 
 estatal <- read_csv("Estatal Victimas - agosto 2019.csv")
 
@@ -31,7 +38,7 @@ estatal %>%
     group_by(Año, Clave_Ent, Entidad, Mes) %>%
     summarise(Homicidios = sum(Homicidios)) %>%
     mutate(Mes = factor(Mes, levels = meses)) %>%
-    left_join(data_frame(Mes = meses, mes_id = 1:12)) %>%
+    left_join(tibble(Mes = meses, mes_id = 1:12)) %>%
     arrange(Año, mes_id) -> homicidios_feminicidios_estatal_mensual
 
 # join with poblacion
@@ -72,7 +79,8 @@ homs_estatal_ago2018_ago2019 %>%
     scale_y_sqrt() + 
     theme(legend.position = "none") 
     
-daily_df <- data_frame(ident = rep(1:32, each = 396), day = rep(as.Date(as.Date("2018-08-01"):as.Date("2019-08-31")), 32))
+daily_df <- data_frame(ident = rep(1:32, each = 396), 
+                       day = rep(as.Date(as.Date("2018-08-01"):as.Date("2019-08-31")), 32))
 
 
 homs_estatal_ago2018_ago2019 %>%
@@ -85,7 +93,7 @@ homs_estatal_ago2018_ago2019 %>%
                          day =  day)) -> tasas_diarias
 
 ## simulate
-
+set.seed(42)
 B = 10000
 n <- nrow(tasas_diarias)
 
@@ -95,17 +103,94 @@ replicate(B,
 simulcols <- paste0("X", 1:10000)
 
 tasas_diarias %>%
-    select(Entidad, tasa_dia, day) %>%
+    select(Clave_Ent, Entidad, tasa_dia, day) %>%
     bind_cols(data.frame(homs_simul)) %>%
     pivot_longer(simulcols, names_to = "replicate") -> homicidios_simulados
 
 homicidios_simulados %>%
-    ggplot(aes(day, value, colour = Entidad)) + 
-    geom_point(alpha = 0.1) +
-    geom_smooth(se = FALSE) +
-    geom_line(aes(y = tasa_dia), linetype = 2) +
-    facet_wrap(~Entidad) +
-    #scale_y_sqrt() + 
-    theme(legend.position = "none") -> homs_sim_plot
+    group_by(Entidad, day) %>%
+    sample_n(1) -> homicidios_simulados_1
 
-ggsave(homs_sim_plot, filename = "homicide_simulation.png", width = 11, height = 8)
+(homicidios_simulados_1 %>%
+    ggplot(aes(day, value, colour = Entidad)) +
+    #geom_point(alpha = 0.2) +
+    geom_line(alpha = 0.5) +
+    geom_smooth(se = FALSE) +
+    #geom_line(aes(y = tasa_dia), size = 1) +
+    facet_wrap(~Entidad) +
+    scale_y_sqrt() +
+    theme(legend.position = "none") -> homs_sim_plot)
+
+
+# homs_sim_plot + 
+#     transition_reveal(along = day)
+
+### create map
+
+mex <- st_read(dsn = "Capas_estados/Estados.shp")
+
+# simplify mex map
+
+st_simplify(mex, dTolerance = 5000) -> mex_simple
+
+ggplot(mex_simple) + geom_sf() 
+
+fac_to_num <- function(x) {
+    as.numeric(as.character(x))
+}
+
+
+mex_simple %>%
+    mutate(Clave_Ent = fac_to_num(CVE_ENT)) -> mex_simple_cve
+
+(mex_simple_cve %>%
+right_join(homicidios_simulados_1) -> homicidios_simulados_map)
+
+
+homicidios_simulados_map %>%
+    group_by(CVE_ENT) %>%
+    summarise(homicidios = sum(value)) %>%
+    ggplot() +
+    geom_sf(aes(fill = homicidios)) -> map1
+
+homicidios_simulados_map %>%
+    mutate(disc_value = fct_rev(
+                            fct_lump(
+                                factor(value), 5, 
+                                other_level = "5+"))) -> homs_sim_map_disc
+
+fill_scale <- rev(RColorBrewer::brewer.pal(6, "Reds"))
+
+homs_sim_map_disc %>%
+    filter(day == "2018-08-01") %>%
+    ggplot() +
+    geom_sf(aes(fill = value), colour = "white") +
+    scale_fill_gradient("Simulated \nhomicides",
+                        low = "#ffe5e5", 
+                        high = "#cc0000",
+                        trans = "sqrt",
+                        breaks = c(0, 1, 5, 10))
+
+homs_sim_map_disc %>%
+    ggplot() +
+    geom_sf(aes(fill = value), colour = "white") +
+    scale_fill_gradient("Simulated \nhomicides",
+                        low = "#ffe5e5", 
+                        high = "#cc0000",
+                        trans = "sqrt",
+                        breaks = c(0, 1, 5, 10)) -> daily_hom_map
+
+
+daily_hom_map + 
+    transition_time(day) +
+    exit_fade() -> daily_hom_map_anim
+
+anim_save(filename = "homicides_animation.gif",
+          animation = animate(daily_hom_map_anim,
+                              nframes = 396,
+                              fps = 3),
+          width = 800,
+          height = 600)
+
+
+
